@@ -24,6 +24,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import okio.ByteString.Companion.decodeBase64
@@ -55,17 +59,10 @@ import org.meshtastic.core.ui.component.SwitchPreference
 import org.meshtastic.core.ui.component.TitledCard
 import org.meshtastic.feature.settings.radio.RadioConfigViewModel
 import org.meshtastic.proto.ChannelSettings
+import org.meshtastic.proto.Config
 import org.meshtastic.proto.Config.LoRaConfig.ModemPreset
 import org.meshtastic.proto.ModuleConfig
 import org.meshtastic.proto.ModuleConfig.MeshBeaconConfig
-
-private const val MESSAGE_MAX_BYTES = 100
-private const val CHANNEL_NAME_MAX_BYTES = 11 // ChannelSettings.name max_size:12 (buffer incl. null terminator)
-private const val MIN_INTERVAL_SECS = 3600
-
-private fun Int.withFlag(flag: Int, on: Boolean): Int = if (on) this or flag else this and flag.inv()
-
-private fun Int.hasFlag(flag: Int): Boolean = (this and flag) != 0
 
 /**
  * Editor for `ModuleConfig.MeshBeaconConfig` (Apple 014-mesh-beacons US2 / FR-009–FR-014). Reads from the connect-time
@@ -82,13 +79,47 @@ fun MeshBeaconConfigScreen(viewModel: RadioConfigViewModel, onBack: () -> Unit, 
     val state by viewModel.radioConfigState.collectAsStateWithLifecycle()
     val meshBeaconConfig = state.moduleConfig.mesh_beacon ?: MeshBeaconConfig()
     val formState = rememberConfigState(initialValue = meshBeaconConfig)
+    val loraConfig = state.radioConfig.lora ?: Config.LoRaConfig()
+    var showWizard by rememberSaveable { mutableStateOf(false) }
+    val availablePresets =
+        remember(
+            state.metadata?.firmware_version,
+            loraConfig.modem_preset,
+            loraConfig.region,
+            state.loraRegionPresetMap,
+            state.localIsLicensed,
+        ) {
+            availableMeshBeaconPresets(
+                firmwareVersion = state.metadata?.firmware_version,
+                currentPreset = loraConfig.modem_preset,
+                region = loraConfig.region,
+                regionPresetMap = state.loraRegionPresetMap,
+                isLicensed = state.localIsLicensed,
+            )
+        }
+
+    if (showWizard) {
+        MeshBeaconWizardScreen(
+            initialConfig = formState.value,
+            loraConfig = loraConfig,
+            channels = state.channelList,
+            availablePresets = availablePresets,
+            onClose = { showWizard = false },
+            onSave = { config ->
+                formState.value = config
+                showWizard = false
+                viewModel.setModuleConfig(ModuleConfig(mesh_beacon = config))
+            },
+        )
+        return
+    }
 
     val listenFlag = MeshBeaconConfig.Flags.FLAG_LISTEN_ENABLED.value
     val broadcastFlag = MeshBeaconConfig.Flags.FLAG_BROADCAST_ENABLED.value
     // Only require a valid interval when broadcasting is actually on — otherwise a default (interval=0) config could
     // never be saved, blocking even a listen-only toggle (FR-013 applies to the broadcast, not the whole form).
     val broadcastEnabled = formState.value.flags.hasFlag(broadcastFlag)
-    val intervalValid = !broadcastEnabled || formState.value.broadcast_interval_secs >= MIN_INTERVAL_SECS
+    val intervalValid = !broadcastEnabled || formState.value.broadcast_interval_secs >= MESH_BEACON_MIN_INTERVAL_SECS
 
     RadioConfigScreenList(
         modifier = modifier,
@@ -105,6 +136,7 @@ fun MeshBeaconConfigScreen(viewModel: RadioConfigViewModel, onBack: () -> Unit, 
             viewModel.setModuleConfig(ModuleConfig(mesh_beacon = it.copy(broadcast_offer_channel = offered)))
         },
     ) {
+        item { MeshBeaconWizardButton(enabled = state.connected, onClick = { showWizard = true }) }
         item {
             TitledCard(title = stringResource(Res.string.mesh_beacon)) {
                 SwitchPreference(
@@ -133,7 +165,7 @@ fun MeshBeaconConfigScreen(viewModel: RadioConfigViewModel, onBack: () -> Unit, 
                 EditTextPreference(
                     title = stringResource(Res.string.mesh_beacon_message),
                     value = formState.value.broadcast_message,
-                    maxSize = MESSAGE_MAX_BYTES,
+                    maxSize = MESH_BEACON_MESSAGE_MAX_BYTES,
                     enabled = state.connected,
                     isError = false,
                     keyboardOptions = KeyboardOptions.Default,
@@ -151,7 +183,7 @@ fun MeshBeaconConfigScreen(viewModel: RadioConfigViewModel, onBack: () -> Unit, 
                     if (intervalValid) {
                         null
                     } else {
-                        stringResource(Res.string.mesh_beacon_interval_error, MIN_INTERVAL_SECS)
+                        stringResource(Res.string.mesh_beacon_interval_error, MESH_BEACON_MIN_INTERVAL_SECS)
                     },
                     onValueChanged = { formState.value = formState.value.copy(broadcast_interval_secs = it) },
                 )
@@ -162,7 +194,7 @@ fun MeshBeaconConfigScreen(viewModel: RadioConfigViewModel, onBack: () -> Unit, 
                 EditTextPreference(
                     title = stringResource(Res.string.mesh_beacon_offer_channel_name),
                     value = formState.value.broadcast_offer_channel?.name.orEmpty(),
-                    maxSize = CHANNEL_NAME_MAX_BYTES,
+                    maxSize = MESH_BEACON_CHANNEL_NAME_MAX_BYTES,
                     enabled = state.connected,
                     isError = false,
                     keyboardOptions = KeyboardOptions.Default,
@@ -284,9 +316,11 @@ private fun BroadcastTargetsCard(
                 Text(stringResource(Res.string.mesh_beacon_target_remove))
             }
         }
-        HorizontalDivider()
-        TextButton(onClick = { onChange(targets + MeshBeaconConfig.BroadcastTarget()) }, enabled = enabled) {
-            Text(stringResource(Res.string.mesh_beacon_target_add))
+        if (targets.size < MESH_BEACON_MAX_TARGETS) {
+            HorizontalDivider()
+            TextButton(onClick = { onChange(targets + MeshBeaconConfig.BroadcastTarget()) }, enabled = enabled) {
+                Text(stringResource(Res.string.mesh_beacon_target_add))
+            }
         }
     }
 }

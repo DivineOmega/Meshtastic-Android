@@ -400,6 +400,40 @@ refresh) and writes via `AdminMessage.setModuleConfig`. Flag edits are read-modi
 | `broadcast_send_as_node` | Integer | Signed integer input | Node number to send as; always visible |
 | `broadcast_on_channel` | — | Not editable | Preserved verbatim through the save round-trip; superseded by the targets list |
 
+#### Guided setup wizard
+
+The guided setup at the top of the screen writes the same fields as one complete transaction. Message-of-the-day setup
+uses the primary channel and clears stale offer data. Preset announcements and channel invitations create one to four
+`broadcast_targets`; invitations copy the selected configured channel's effective name and PSK without displaying the
+key. The wizard offers 6, 12, and 24 hour intervals, then saves the reviewed config directly to the radio.
+
+```mermaid
+flowchart TD
+    Start[Set up a beacon] --> Purpose{What do you want this beacon to do?}
+    Purpose -->|Message of the day| Message[What should the beacon say?]
+    Purpose -->|Announce a preset| Message
+    Purpose -->|Offer a channel| Message
+    Message --> Mode{Chosen purpose}
+    Mode -->|Message of the day| Schedule[How often should it be sent?]
+    Mode -->|Announce a preset| AdvertisedPreset[Which preset should people use?]
+    Mode -->|Offer a channel| OfferedChannel[Which channel should people join?<br/>Which preset should people use?]
+    AdvertisedPreset --> Targets[Where should this announcement be heard?<br/>Choose 1-4 presets]
+    OfferedChannel --> Targets
+    Targets --> Schedule
+    Schedule --> Review[Ready to broadcast?]
+    Review --> Save[Save to radio]
+```
+
+| Wizard answer | Settings written |
+|---------------|------------------|
+| Purpose: Message of the day | Clears `broadcast_offer_*` and `broadcast_targets`; leaves `broadcast_on_channel` unset so the firmware uses the primary channel |
+| Purpose: Announce a preset | Sets `broadcast_offer_region` and `broadcast_offer_preset`; keeps `broadcast_offer_channel` empty |
+| Purpose: Offer a channel | Copies the selected channel's effective name and PSK to `broadcast_offer_channel`, and sets `broadcast_offer_region` and `broadcast_offer_preset` |
+| Beacon message | Sets `broadcast_message` (maximum 100 UTF-8 bytes) |
+| Broadcast presets | Creates one `broadcast_targets` entry per selected preset using the current region; limited to four |
+| Schedule | Sets `broadcast_interval_secs` to 21600, 43200, or 86400 seconds |
+| Save to radio | Enables `FLAG_BROADCAST_ENABLED`, preserves unrelated flag bits, and writes the reviewed `MeshBeaconConfig` |
+
 ---
 
 ## Channel Config
